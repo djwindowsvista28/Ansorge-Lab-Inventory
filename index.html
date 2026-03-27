@@ -1,0 +1,760 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LabTrack — Synced Inventory</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0b0f1a;
+    --surface: #111827;
+    --surface2: #1a2234;
+    --surface3: #202d42;
+    --border: #253048;
+    --text: #e2e8f0;
+    --muted: #6b7a99;
+    --accent-v: #38bdf8;
+    --accent-p: #a78bfa;
+    --accent-s: #34d399;
+    --accent-g: #fb923c;
+    --danger: #f87171;
+    --warn: #fbbf24;
+    --ok: #4ade80;
+    --radius: 8px;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'DM Sans', sans-serif;
+    background: var(--bg); color: var(--text);
+    min-height: 100vh; overflow-x: hidden;
+  }
+  body::before {
+    content: ''; position: fixed; inset: 0; z-index: 0;
+    background-image:
+      linear-gradient(var(--border) 1px, transparent 1px),
+      linear-gradient(90deg, var(--border) 1px, transparent 1px);
+    background-size: 40px 40px; opacity: 0.25; pointer-events: none;
+  }
+
+  /* SIDEBAR */
+  .sidebar {
+    position: fixed; top: 0; left: 0; bottom: 0; width: 220px;
+    background: var(--surface); border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; z-index: 100;
+  }
+  .logo { padding: 20px 20px 16px; border-bottom: 1px solid var(--border); }
+  .logo h1 { font-family: 'JetBrains Mono', monospace; font-size: 18px; font-weight: 700; color: var(--accent-v); }
+  .logo span { color: var(--muted); font-size: 10px; display: block; margin-top: 2px; }
+  .sync-indicator {
+    display: inline-flex; align-items: center; gap: 5px;
+    font-size: 10px; color: var(--muted); margin-top: 6px;
+  }
+  .sync-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--muted); transition: background 0.3s;
+  }
+  .sync-dot.live { background: var(--ok); box-shadow: 0 0 6px var(--ok); animation: pulse 2s infinite; }
+  .sync-dot.error { background: var(--danger); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
+
+  .nav { flex: 1; padding: 12px 10px; display: flex; flex-direction: column; gap: 3px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 9px 12px; border-radius: var(--radius);
+    cursor: pointer; transition: all 0.15s;
+    font-size: 13px; font-weight: 500; color: var(--muted);
+    border: 1px solid transparent; user-select: none;
+  }
+  .nav-item:hover { background: var(--surface2); color: var(--text); }
+  .nav-item.active { background: var(--surface3); color: var(--text); border-color: var(--border); }
+  .nav-item .dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+  .nav-count {
+    margin-left: auto; background: var(--surface3); border-radius: 20px;
+    padding: 1px 7px; font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  }
+  .sidebar-footer { padding: 14px 18px; border-top: 1px solid var(--border); }
+  .sidebar-footer small { color: var(--muted); font-size: 10px; font-family: 'JetBrains Mono', monospace; }
+
+  /* MAIN */
+  .main { margin-left: 220px; min-height: 100vh; position: relative; z-index: 1; }
+  .topbar {
+    padding: 18px 28px; display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--border);
+    background: rgba(11,15,26,0.8); backdrop-filter: blur(8px);
+    position: sticky; top: 0; z-index: 50;
+  }
+  .topbar h2 { font-size: 15px; font-weight: 600; flex: 1; }
+  .topbar .accent-dot { width: 10px; height: 10px; border-radius: 50%; }
+
+  .search-box {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 7px 12px; flex: 0 0 240px;
+  }
+  .search-box input {
+    background: none; border: none; outline: none;
+    color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 13px; width: 100%;
+  }
+  .search-box input::placeholder { color: var(--muted); }
+
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 8px 14px; border-radius: var(--radius);
+    font-size: 13px; font-weight: 500; cursor: pointer;
+    transition: all 0.15s; border: none; font-family: 'DM Sans', sans-serif;
+  }
+  .btn-primary { background: var(--accent-v); color: #000; }
+  .btn-primary:hover { opacity: 0.88; }
+  .btn-ghost { background: var(--surface2); color: var(--text); border: 1px solid var(--border); }
+  .btn-ghost:hover { background: var(--surface3); }
+  .btn-danger { background: var(--danger); color: #fff; }
+  .btn-danger:hover { opacity: 0.88; }
+  .btn-sm { padding: 5px 10px; font-size: 12px; }
+
+  /* CONTENT */
+  .content { padding: 24px 28px; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; margin-bottom: 24px; }
+  .stat-card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .stat-card .label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.8px; }
+  .stat-card .value { font-size: 28px; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+  .stat-card .sub { font-size: 11px; color: var(--muted); }
+
+  /* TABLE */
+  .table-wrap {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .table-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 18px; border-bottom: 1px solid var(--border);
+  }
+  .table-header h3 { font-size: 13px; font-weight: 600; }
+  .filter-row {
+    display: flex; gap: 8px; padding: 10px 18px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap;
+  }
+  .filter-chip {
+    padding: 4px 12px; border-radius: 20px; font-size: 12px;
+    cursor: pointer; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--muted);
+    transition: all 0.15s; user-select: none;
+  }
+  .filter-chip.active { background: var(--accent-v); color: #000; border-color: var(--accent-v); }
+
+  table { width: 100%; border-collapse: collapse; }
+  th {
+    text-align: left; padding: 10px 14px;
+    font-size: 11px; color: var(--muted); text-transform: uppercase;
+    letter-spacing: 0.6px; font-weight: 600;
+    border-bottom: 1px solid var(--border); background: var(--surface2); white-space: nowrap;
+  }
+  td {
+    padding: 11px 14px; font-size: 13px;
+    border-bottom: 1px solid rgba(37,48,72,0.5); vertical-align: middle;
+  }
+  tr:last-child td { border-bottom: none; }
+  tr:hover td { background: rgba(255,255,255,0.02); }
+
+  .badge {
+    display: inline-block; padding: 2px 9px; border-radius: 20px;
+    font-size: 11px; font-weight: 600; letter-spacing: 0.3px;
+  }
+  .badge-viral { background: rgba(56,189,248,0.15); color: var(--accent-v); }
+  .badge-primary { background: rgba(167,139,250,0.15); color: var(--accent-p); }
+  .badge-secondary { background: rgba(52,211,153,0.15); color: var(--accent-s); }
+  .badge-general { background: rgba(251,146,60,0.15); color: var(--accent-g); }
+  .badge-ok { background: rgba(74,222,128,0.12); color: var(--ok); }
+  .badge-warn { background: rgba(251,191,36,0.12); color: var(--warn); }
+  .badge-danger { background: rgba(248,113,113,0.12); color: var(--danger); }
+
+  .mono { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+  .muted { color: var(--muted); }
+  .actions { display: flex; gap: 6px; }
+
+  /* MODAL */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+    z-index: 200; display: flex; align-items: center; justify-content: center;
+    backdrop-filter: blur(4px); padding: 20px;
+    opacity: 0; pointer-events: none; transition: opacity 0.2s;
+  }
+  .overlay.open { opacity: 1; pointer-events: all; }
+  .modal {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 12px; width: 100%; max-width: 620px;
+    max-height: 92vh; overflow-y: auto;
+    transform: translateY(20px); transition: transform 0.2s;
+  }
+  .overlay.open .modal { transform: translateY(0); }
+  .modal-header {
+    padding: 20px 22px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    position: sticky; top: 0; background: var(--surface); z-index: 1;
+  }
+  .modal-header h3 { font-size: 15px; font-weight: 600; }
+  .close-btn {
+    width: 28px; height: 28px; border-radius: 6px;
+    background: var(--surface2); border: 1px solid var(--border);
+    color: var(--muted); cursor: pointer; font-size: 16px;
+    display: flex; align-items: center; justify-content: center; transition: all 0.15s;
+  }
+  .close-btn:hover { background: var(--surface3); color: var(--text); }
+  .modal-body { padding: 22px; }
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .form-group { display: flex; flex-direction: column; gap: 5px; }
+  .form-group.full { grid-column: 1 / -1; }
+  .form-group label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.6px; font-weight: 600; }
+  .form-group input, .form-group select, .form-group textarea {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 9px 12px;
+    color: var(--text); font-family: 'DM Sans', sans-serif; font-size: 13px;
+    outline: none; transition: border-color 0.15s; width: 100%;
+  }
+  .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--accent-v); }
+  .form-group textarea { resize: vertical; min-height: 70px; }
+  .form-group select option { background: var(--surface2); }
+  .modal-footer {
+    padding: 16px 22px; border-top: 1px solid var(--border);
+    display: flex; justify-content: flex-end; gap: 10px;
+  }
+
+  /* LOADING */
+  .loading-screen {
+    position: fixed; inset: 0; background: var(--bg);
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    z-index: 999; gap: 16px;
+  }
+  .loading-screen h2 { font-family: 'JetBrains Mono', monospace; color: var(--accent-v); font-size: 20px; }
+  .loading-screen p { color: var(--muted); font-size: 13px; }
+  .spinner {
+    width: 36px; height: 36px; border: 3px solid var(--surface3);
+    border-top-color: var(--accent-v); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .empty { text-align: center; padding: 60px 20px; color: var(--muted); }
+  .empty .icon { font-size: 40px; margin-bottom: 12px; }
+  .empty p { font-size: 14px; }
+
+  .toast {
+    position: fixed; bottom: 24px; right: 24px; z-index: 300;
+    background: var(--surface3); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 18px;
+    font-size: 13px; box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+    transform: translateY(80px); transition: transform 0.3s;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .toast.show { transform: translateY(0); }
+
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: var(--surface); }
+  ::-webkit-scrollbar-thumb { background: var(--surface3); border-radius: 3px; }
+
+  @media (max-width: 900px) {
+    .sidebar { width: 60px; }
+    .sidebar .logo h1, .sidebar .logo span, .sync-indicator,
+    .nav-item span, .nav-count, .sidebar-footer { display: none; }
+    .main { margin-left: 60px; }
+    .stats { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<!-- LOADING -->
+<div class="loading-screen" id="loading-screen">
+  <div class="spinner"></div>
+  <h2>LabTrack</h2>
+  <p>Connecting to database…</p>
+</div>
+
+<!-- SIDEBAR -->
+<aside class="sidebar">
+  <div class="logo">
+    <h1>LabTrack</h1>
+    <span>synced · real-time</span>
+    <div class="sync-indicator">
+      <div class="sync-dot" id="sync-dot"></div>
+      <span id="sync-label">connecting…</span>
+    </div>
+  </div>
+  <nav class="nav">
+    <div class="nav-item active" onclick="setTab('all')">
+      <span class="dot" style="background:#6b7a99"></span>
+      <span>All Items</span>
+      <span class="nav-count" id="cnt-all">0</span>
+    </div>
+    <div class="nav-item" onclick="setTab('viral')">
+      <span class="dot" style="background:var(--accent-v)"></span>
+      <span>Viral Constructs</span>
+      <span class="nav-count" id="cnt-viral">0</span>
+    </div>
+    <div class="nav-item" onclick="setTab('primary')">
+      <span class="dot" style="background:var(--accent-p)"></span>
+      <span>Primary Abs</span>
+      <span class="nav-count" id="cnt-primary">0</span>
+    </div>
+    <div class="nav-item" onclick="setTab('secondary')">
+      <span class="dot" style="background:var(--accent-s)"></span>
+      <span>Secondary Abs</span>
+      <span class="nav-count" id="cnt-secondary">0</span>
+    </div>
+    <div class="nav-item" onclick="setTab('general')">
+      <span class="dot" style="background:var(--accent-g)"></span>
+      <span>General Reagents</span>
+      <span class="nav-count" id="cnt-general">0</span>
+    </div>
+  </nav>
+  <div class="sidebar-footer">
+    <small id="item-footer">0 items total</small>
+  </div>
+</aside>
+
+<!-- MAIN -->
+<main class="main">
+  <div class="topbar">
+    <span class="accent-dot" id="tab-dot" style="background:var(--muted)"></span>
+    <h2 id="tab-title">All Items</h2>
+    <div class="search-box">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="color:var(--muted);flex-shrink:0"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+      <input type="text" placeholder="Search name, ID, location…" id="search-input" oninput="renderTable()">
+    </div>
+    <button class="btn btn-primary" onclick="openAdd()">+ Add Item</button>
+    <button class="btn btn-ghost" onclick="exportCSV()" title="Export CSV">
+      <svg width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+      Export
+    </button>
+  </div>
+
+  <div class="content">
+    <div class="stats">
+      <div class="stat-card">
+        <div class="label">Total Items</div>
+        <div class="value" id="st-total">0</div>
+        <div class="sub">in inventory</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Active / OK</div>
+        <div class="value" id="st-ok" style="color:var(--ok)">0</div>
+        <div class="sub">ready to use</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Low Stock / Expiring</div>
+        <div class="value" id="st-warn" style="color:var(--warn)">0</div>
+        <div class="sub">need attention</div>
+      </div>
+      <div class="stat-card">
+        <div class="label">Depleted / Expired</div>
+        <div class="value" id="st-bad" style="color:var(--danger)">0</div>
+        <div class="sub">out / inactive</div>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <div class="table-header">
+        <h3 id="table-heading">Inventory</h3>
+        <select class="btn btn-ghost btn-sm" onchange="renderTable()" id="sort-sel" style="padding:5px 10px;cursor:pointer">
+          <option value="name">Sort: Name</option>
+          <option value="status">Sort: Status</option>
+          <option value="expiry">Sort: Expiry</option>
+          <option value="category">Sort: Category</option>
+        </select>
+      </div>
+      <div class="filter-row" id="filter-row"></div>
+      <div style="overflow-x:auto">
+        <table id="main-table">
+          <thead>
+            <tr>
+              <th>ID</th><th>Name</th><th>Category</th><th>Details</th>
+              <th>Qty / Volume</th><th>Location</th><th>Expiry</th><th>Status</th><th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="table-body"></tbody>
+        </table>
+      </div>
+      <div class="empty" id="empty-state" style="display:none">
+        <div class="icon">🔬</div>
+        <p>No items found. Add your first reagent!</p>
+      </div>
+    </div>
+  </div>
+</main>
+
+<!-- MODAL -->
+<div class="overlay" id="overlay" onclick="overlayClick(event)">
+  <div class="modal">
+    <div class="modal-header">
+      <h3 id="modal-title">Add Item</h3>
+      <button class="close-btn" onclick="closeModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="form-grid" id="form-container"></div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+      <button class="btn btn-primary" onclick="saveItem()" id="save-btn">Save Item</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+// ── SUPABASE ──────────────────────────────────────────────────────────────────
+const SUPABASE_URL = 'https://niejakkxmqecvnrysirr.supabase.co';
+const SUPABASE_KEY = 'sb_publishable_1Mthhp1fw25olzs9gLaCjQ_mTdCo4HD';
+const { createClient } = supabase;
+const sb = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let db = [];
+let editId = null;
+let currentTab = 'all';
+let activeFilter = 'all';
+
+// ── INIT ──────────────────────────────────────────────────────────────────────
+async function init() {
+  try {
+    const { data, error } = await sb.from('inventory').select('*').order('created_at', { ascending: false });
+    if (error) throw error;
+    db = data || [];
+    setSyncStatus(true);
+    subscribeRealtime();
+  } catch (e) {
+    console.error(e);
+    setSyncStatus(false);
+    showToast('⚠️ Could not connect to database');
+  }
+  document.getElementById('loading-screen').style.display = 'none';
+  buildFilters();
+  renderTable();
+}
+
+function setSyncStatus(ok) {
+  const dot = document.getElementById('sync-dot');
+  const label = document.getElementById('sync-label');
+  if (ok) { dot.className = 'sync-dot live'; label.textContent = 'live sync'; }
+  else { dot.className = 'sync-dot error'; label.textContent = 'offline'; }
+}
+
+// ── REALTIME ──────────────────────────────────────────────────────────────────
+function subscribeRealtime() {
+  sb.channel('inventory-changes')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'inventory' }, payload => {
+      const { eventType, new: newRow, old: oldRow } = payload;
+      if (eventType === 'INSERT') {
+        if (!db.find(i => i.id === newRow.id)) { db.unshift(newRow); showToast('🔄 New item added by colleague'); }
+      } else if (eventType === 'UPDATE') {
+        const idx = db.findIndex(i => i.id === newRow.id);
+        if (idx > -1) db[idx] = newRow;
+        else db.unshift(newRow);
+        showToast('🔄 Item updated by colleague');
+      } else if (eventType === 'DELETE') {
+        db = db.filter(i => i.id !== oldRow.id);
+        showToast('🔄 Item deleted by colleague');
+      }
+      renderTable();
+    })
+    .subscribe();
+}
+
+// ── ID GENERATION ─────────────────────────────────────────────────────────────
+function nextId(cat) {
+  const prefix = { viral:'VC', primary:'AB', secondary:'SAB', general:'RG' }[cat] || 'IT';
+  const nums = db.filter(i=>i.category===cat).map(i=>parseInt((i.id||'').split('-')[1])||0);
+  const next = nums.length ? Math.max(...nums)+1 : 1;
+  return `${prefix}-${String(next).padStart(3,'0')}`;
+}
+
+// ── STATUS ────────────────────────────────────────────────────────────────────
+function statusClass(item) {
+  const s = item.status;
+  if (s === 'Depleted' || s === 'Expired' || s === 'QC Fail') return 'danger';
+  if (s === 'Low Stock' || s === 'Expiring Soon' || s === 'Reserved') return 'warn';
+  return 'ok';
+}
+
+function expiryBadge(expiry) {
+  if (!expiry) return '<span class="muted">—</span>';
+  const d = new Date(expiry), now = new Date();
+  const days = (d - now) / 86400000;
+  if (days < 0) return `<span class="badge badge-danger">Expired</span>`;
+  if (days < 60) return `<span class="badge badge-warn">${Math.round(days)}d left</span>`;
+  return `<span class="badge badge-ok">${expiry}</span>`;
+}
+
+function catBadge(cat) {
+  const map = { viral:['badge-viral','Viral'], primary:['badge-primary','Primary Ab'],
+    secondary:['badge-secondary','Secondary Ab'], general:['badge-general','General'] };
+  const [cls, label] = map[cat] || ['badge-general', cat];
+  return `<span class="badge ${cls}">${label}</span>`;
+}
+
+// ── TAB ───────────────────────────────────────────────────────────────────────
+const tabColors = { all:'#6b7a99', viral:'#38bdf8', primary:'#a78bfa', secondary:'#34d399', general:'#fb923c' };
+const tabLabels = { all:'All Items', viral:'Viral Constructs', primary:'Primary Antibodies', secondary:'Secondary Antibodies', general:'General Reagents' };
+
+function setTab(tab) {
+  currentTab = tab; activeFilter = 'all';
+  document.querySelectorAll('.nav-item').forEach((el,i) => {
+    el.classList.toggle('active', ['all','viral','primary','secondary','general'][i] === tab);
+  });
+  document.getElementById('tab-title').textContent = tabLabels[tab];
+  document.getElementById('tab-dot').style.background = tabColors[tab];
+  document.getElementById('search-input').value = '';
+  buildFilters(); renderTable();
+}
+
+// ── FILTERS ───────────────────────────────────────────────────────────────────
+const STATUS_FILTERS = ['all','Active','Low Stock','Reserved','Depleted','Expiring Soon','QC Fail'];
+function buildFilters() {
+  document.getElementById('filter-row').innerHTML = STATUS_FILTERS.map(f =>
+    `<div class="filter-chip ${activeFilter===f?'active':''}" onclick="setFilter('${f}')">${f==='all'?'All Statuses':f}</div>`
+  ).join('');
+}
+function setFilter(f) { activeFilter = f; buildFilters(); renderTable(); }
+
+// ── RENDER ────────────────────────────────────────────────────────────────────
+function renderTable() {
+  const q = document.getElementById('search-input').value.toLowerCase();
+  const sort = document.getElementById('sort-sel').value;
+
+  let items = db.filter(i => {
+    if (currentTab !== 'all' && i.category !== currentTab) return false;
+    if (activeFilter !== 'all' && i.status !== activeFilter) return false;
+    if (q && ![i.name,i.id,i.location,i.details,i.notes,i.target,i.vendor].filter(Boolean).join(' ').toLowerCase().includes(q)) return false;
+    return true;
+  });
+
+  items.sort((a,b) => {
+    if (sort==='name') return (a.name||'').localeCompare(b.name||'');
+    if (sort==='status') return (a.status||'').localeCompare(b.status||'');
+    if (sort==='category') return (a.category||'').localeCompare(b.category||'');
+    if (sort==='expiry') {
+      if (!a.expiry && !b.expiry) return 0;
+      if (!a.expiry) return 1; if (!b.expiry) return -1;
+      return new Date(a.expiry) - new Date(b.expiry);
+    }
+    return 0;
+  });
+
+  const tbody = document.getElementById('table-body');
+  tbody.innerHTML = '';
+  document.getElementById('empty-state').style.display = items.length ? 'none' : 'block';
+
+  items.forEach(item => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td class="mono muted">${item.id}</td>
+      <td><strong>${item.name}</strong>${item.notes?`<br><span class="muted" style="font-size:11px">${item.notes.substring(0,55)}${item.notes.length>55?'…':''}</span>`:''}</td>
+      <td>${catBadge(item.category)}</td>
+      <td class="muted" style="font-size:12px;max-width:160px">${item.details||'—'}</td>
+      <td class="mono">${item.quantity||'—'}</td>
+      <td style="font-size:12px">${item.location||'—'}</td>
+      <td>${expiryBadge(item.expiry)}</td>
+      <td><span class="badge badge-${statusClass(item)}">${item.status||'—'}</span></td>
+      <td><div class="actions">
+        <button class="btn btn-ghost btn-sm" onclick="openEdit('${item.id}')">Edit</button>
+        <button class="btn btn-danger btn-sm" onclick="deleteItem('${item.id}')">Del</button>
+      </div></td>`;
+    tbody.appendChild(tr);
+  });
+
+  updateCounts();
+}
+
+function updateCounts() {
+  ['viral','primary','secondary','general'].forEach(c =>
+    document.getElementById(`cnt-${c}`).textContent = db.filter(i=>i.category===c).length
+  );
+  document.getElementById('cnt-all').textContent = db.length;
+  document.getElementById('item-footer').textContent = `${db.length} items total`;
+  document.getElementById('table-heading').textContent = tabLabels[currentTab];
+  const vis = db.filter(i => currentTab==='all' || i.category===currentTab);
+  document.getElementById('st-total').textContent = vis.length;
+  document.getElementById('st-ok').textContent = vis.filter(i=>statusClass(i)==='ok').length;
+  document.getElementById('st-warn').textContent = vis.filter(i=>statusClass(i)==='warn').length;
+  document.getElementById('st-bad').textContent = vis.filter(i=>statusClass(i)==='danger').length;
+}
+
+// ── FORM BUILDER ──────────────────────────────────────────────────────────────
+const STATUS_OPTS = ['Active','Low Stock','Reserved','Depleted','QC Fail','Expiring Soon'];
+const BSL_OPTS = ['BSL-1','BSL-2','BSL-3','N/A'];
+
+function buildForm(item={}) {
+  const cat = item.category || 'viral';
+  const catSpecific = {
+    viral: `
+      <div class="form-group"><label>Vector Type</label><input id="f-vector" value="${item.vector||''}" placeholder="AAV / Lentivirus / Plasmid"></div>
+      <div class="form-group"><label>Serotype</label><input id="f-serotype" value="${item.serotype||''}" placeholder="e.g. AAV9, VSV-G"></div>
+      <div class="form-group"><label>Transgene</label><input id="f-transgene" value="${item.transgene||''}" placeholder="e.g. GCaMP8m"></div>
+      <div class="form-group"><label>Promoter</label><input id="f-promoter" value="${item.promoter||''}" placeholder="e.g. hSyn1, CAG"></div>
+      <div class="form-group"><label>Titer (GC/mL)</label><input id="f-titer" value="${item.titer||''}" placeholder="e.g. 2.5E+13"></div>
+      <div class="form-group"><label>Biosafety Level</label>
+        <select id="f-bsl">${BSL_OPTS.map(b=>`<option ${item.bsl===b?'selected':''}>${b}</option>`).join('')}</select></div>`,
+    primary: `
+      <div class="form-group"><label>Target Protein</label><input id="f-target" value="${item.target||''}" placeholder="e.g. MAP2, GFAP"></div>
+      <div class="form-group"><label>Catalog #</label><input id="f-catalog" value="${item.catalog||''}" placeholder="e.g. ab5392"></div>
+      <div class="form-group"><label>Vendor</label><input id="f-vendor" value="${item.vendor||''}" placeholder="e.g. Abcam"></div>
+      <div class="form-group"><label>Host Species</label><input id="f-host" value="${item.host||''}" placeholder="Rabbit / Mouse"></div>
+      <div class="form-group"><label>Reactivity</label><input id="f-reactivity" value="${item.reactivity||''}" placeholder="Human, Mouse, Rat"></div>
+      <div class="form-group"><label>Dilution (WB)</label><input id="f-dilutionWB" value="${item.dilutionWB||''}" placeholder="1:1000"></div>
+      <div class="form-group"><label>Dilution (IF)</label><input id="f-dilutionIF" value="${item.dilutionIF||''}" placeholder="1:500"></div>
+      <div class="form-group"><label>Dilution (IHC)</label><input id="f-dilutionIHC" value="${item.dilutionIHC||''}" placeholder="1:200"></div>`,
+    secondary: `
+      <div class="form-group"><label>Target (Host)</label><input id="f-target" value="${item.target||''}" placeholder="e.g. Anti-Rabbit IgG"></div>
+      <div class="form-group"><label>Fluorophore / Conjugate</label><input id="f-fluor" value="${item.fluor||''}" placeholder="e.g. Alexa 488, HRP"></div>
+      <div class="form-group"><label>Excitation (nm)</label><input id="f-ex" value="${item.ex||''}" placeholder="495"></div>
+      <div class="form-group"><label>Emission (nm)</label><input id="f-em" value="${item.em||''}" placeholder="519"></div>
+      <div class="form-group"><label>Vendor</label><input id="f-vendor" value="${item.vendor||''}" placeholder="ThermoFisher"></div>
+      <div class="form-group"><label>Catalog #</label><input id="f-catalog" value="${item.catalog||''}" placeholder="A-11008"></div>
+      <div class="form-group"><label>Application(s)</label><input id="f-applications" value="${item.applications||''}" placeholder="IF, IHC, WB"></div>
+      <div class="form-group"><label>Dilution</label><input id="f-dilution" value="${item.dilution||''}" placeholder="1:500"></div>`,
+    general: `
+      <div class="form-group full"><label>Description</label><input id="f-details" value="${item.details||''}" placeholder="e.g. 10x PBS, Protease inhibitor cocktail"></div>`
+  }[cat] || '';
+
+  return `
+    <div class="form-group">
+      <label>Category *</label>
+      <select id="f-category" onchange="rebuildForm()" required>
+        <option value="viral" ${cat==='viral'?'selected':''}>Viral Construct</option>
+        <option value="primary" ${cat==='primary'?'selected':''}>Primary Antibody</option>
+        <option value="secondary" ${cat==='secondary'?'selected':''}>Secondary Antibody</option>
+        <option value="general" ${cat==='general'?'selected':''}>General Reagent</option>
+      </select>
+    </div>
+    <div class="form-group">
+      <label>Status *</label>
+      <select id="f-status">${STATUS_OPTS.map(s=>`<option ${item.status===s?'selected':''}>${s}</option>`).join('')}</select>
+    </div>
+    <div class="form-group full">
+      <label>Name *</label>
+      <input id="f-name" value="${item.name||''}" placeholder="e.g. AAV9-hSyn1-GCaMP8m" required>
+    </div>
+    ${catSpecific}
+    <div class="form-group"><label>Quantity / Volume</label><input id="f-quantity" value="${item.quantity||''}" placeholder="e.g. 100 µL"></div>
+    <div class="form-group"><label>Lot #</label><input id="f-lot" value="${item.lot||''}" placeholder="e.g. GR337291-1"></div>
+    <div class="form-group"><label>Date Received</label><input id="f-received" type="date" value="${item.received||''}"></div>
+    <div class="form-group"><label>Expiry Date</label><input id="f-expiry" type="date" value="${item.expiry||''}"></div>
+    <div class="form-group full"><label>Storage Location</label><input id="f-location" value="${item.location||''}" placeholder="e.g. Freezer A / Box 3 / A1"></div>
+    <div class="form-group full"><label>Notes</label><textarea id="f-notes" placeholder="QC results, references, caveats…">${item.notes||''}</textarea></div>
+  `;
+}
+
+function rebuildForm() {
+  const cat = document.getElementById('f-category').value;
+  const name = document.getElementById('f-name')?.value || '';
+  const status = document.getElementById('f-status')?.value || 'Active';
+  document.getElementById('form-container').innerHTML = buildForm({ category: cat, name, status });
+}
+
+// ── MODAL ─────────────────────────────────────────────────────────────────────
+function openAdd() {
+  editId = null;
+  document.getElementById('modal-title').textContent = 'Add Item';
+  document.getElementById('save-btn').textContent = 'Save Item';
+  const defaultCat = currentTab === 'all' ? 'viral' : currentTab;
+  document.getElementById('form-container').innerHTML = buildForm({ category: defaultCat });
+  document.getElementById('overlay').classList.add('open');
+}
+
+function openEdit(id) {
+  const item = db.find(i => i.id === id);
+  if (!item) return;
+  editId = id;
+  document.getElementById('modal-title').textContent = 'Edit Item';
+  document.getElementById('save-btn').textContent = 'Update Item';
+  document.getElementById('form-container').innerHTML = buildForm(item);
+  document.getElementById('overlay').classList.add('open');
+}
+
+function closeModal() { document.getElementById('overlay').classList.remove('open'); editId = null; }
+function overlayClick(e) { if (e.target === document.getElementById('overlay')) closeModal(); }
+
+// ── SAVE ──────────────────────────────────────────────────────────────────────
+const g = id => { const el = document.getElementById(id); return el ? el.value.trim() : ''; };
+
+async function saveItem() {
+  const name = g('f-name'), cat = g('f-category');
+  if (!name) { alert('Name is required.'); return; }
+
+  const btn = document.getElementById('save-btn');
+  btn.textContent = 'Saving…'; btn.disabled = true;
+
+  const item = {
+    id: editId || nextId(cat),
+    name, category: cat, status: g('f-status'),
+    quantity: g('f-quantity'), lot: g('f-lot'),
+    received: g('f-received') || null, expiry: g('f-expiry') || null,
+    location: g('f-location'), notes: g('f-notes'),
+    // category-specific
+    vector: g('f-vector'), serotype: g('f-serotype'), transgene: g('f-transgene'),
+    promoter: g('f-promoter'), titer: g('f-titer'), bsl: g('f-bsl'),
+    target: g('f-target'), catalog: g('f-catalog'), vendor: g('f-vendor'),
+    host: g('f-host'), reactivity: g('f-reactivity'),
+    dilutionWB: g('f-dilutionWB'), dilutionIF: g('f-dilutionIF'), dilutionIHC: g('f-dilutionIHC'),
+    fluor: g('f-fluor'), ex: g('f-ex'), em: g('f-em'),
+    applications: g('f-applications'), dilution: g('f-dilution'),
+    details: g('f-details') || [g('f-vector')||g('f-target')||g('f-fluor'), g('f-serotype')||g('f-vendor'), g('f-transgene')].filter(Boolean).join(' · '),
+  };
+
+  try {
+    const { error } = await sb.from('inventory').upsert(item);
+    if (error) throw error;
+    // Update local db
+    const idx = db.findIndex(i => i.id === item.id);
+    if (idx > -1) db[idx] = item; else db.unshift(item);
+    closeModal(); renderTable();
+    showToast(editId ? '✏️ Item updated' : '✅ Item added');
+  } catch (e) {
+    console.error(e);
+    showToast('❌ Save failed: ' + e.message);
+  }
+  btn.textContent = editId ? 'Update Item' : 'Save Item'; btn.disabled = false;
+}
+
+// ── DELETE ────────────────────────────────────────────────────────────────────
+async function deleteItem(id) {
+  if (!confirm('Delete this item? This cannot be undone.')) return;
+  try {
+    const { error } = await sb.from('inventory').delete().eq('id', id);
+    if (error) throw error;
+    db = db.filter(i => i.id !== id);
+    renderTable(); showToast('🗑️ Item deleted');
+  } catch(e) {
+    showToast('❌ Delete failed: ' + e.message);
+  }
+}
+
+// ── EXPORT ────────────────────────────────────────────────────────────────────
+function exportCSV() {
+  const headers = ['ID','Name','Category','Status','Details','Quantity','Location','Lot','Received','Expiry','Notes'];
+  const rows = db.map(i => [i.id,i.name,i.category,i.status,i.details,i.quantity,i.location,i.lot,i.received,i.expiry,i.notes]
+    .map(v => `"${(v||'').replace(/"/g,'""')}"`));
+  const csv = [headers, ...rows].map(r=>r.join(',')).join('\n');
+  const a = document.createElement('a');
+  a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
+  a.download = 'lab_inventory_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click(); showToast('📥 CSV downloaded');
+}
+
+// ── TOAST ─────────────────────────────────────────────────────────────────────
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 2800);
+}
+
+init();
+</script>
+</body>
+</html>
